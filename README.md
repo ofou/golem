@@ -17,7 +17,7 @@ uv tool install git+https://github.com/ofou/golem
 golem login
 ```
 
-`pip install` from the same URL works the same way. The wheel includes the default licence.
+`pip install` from the same URL works the same way. The wheel includes the default licence, `authority.json`.
 
 To run from a container:
 
@@ -98,6 +98,14 @@ From `authority.json`, enforced by the kernel:
 
 The spend cap is checked between model steps. Models are set in the same file. The builder and the tester are both `deepseek/deepseek-v4.1-flash`, so receipts mark `independent_tester` false. Both run at low reasoning effort (`builder_reasoning` and `tester_reasoning`); the model's default is high. The advisor is `typesafe/jev-1.13`.
 
+Answers and tools come from language models and can be wrong. A tool that passes its own tests, its blind tests, and the stub check agrees with those tests; it is not proven correct, and an answer is not checked at all. Read an answer or a proposed diff before acting on it. Under Golem's own licence, tools use only the standard library and run without network access; another licence can change both.
+
+## Data and privacy
+
+Golem sends the task, the file paths it lists, the files it reads, tool output, the names and descriptions of installed tools, and the handoff between sessions to OpenRouter and the model providers OpenRouter routes to, under your key. Proposals also go to OpenRouter's Decisions API for the advisor. In a comment-triggered run, the comment is the task. An attached file reaches a model only when Golem reads it or a tool returns it. What OpenRouter and its providers keep, and where, is set by OpenRouter's [privacy policy](https://openrouter.ai/privacy) and [terms](https://openrouter.ai/terms).
+
+On GitHub Actions, GitHub keeps the run logs, the summary, the artifact, and the registry cache under the [GitHub Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement). On a public repository they are public. Golem sends nothing to its developer and has no telemetry.
+
 ## GitHub Actions
 
 ### In your repository
@@ -164,7 +172,13 @@ An optional `task2` runs as a new process on the same registry. A second job hol
 
 ### Releasing
 
-Publish a GitHub release `vX.Y.Z`. [`release.yml`](.github/workflows/release.yml) moves the tag `vX` to that commit. To list the action on GitHub Marketplace, tick "Publish this Action to the GitHub Marketplace" on the release. The listing uses `action.yml`'s `name`, "Run Golem", because the GitHub login `golem` is taken.
+1. Merge to `main`. The Marketplace listing shows the default branch's README.
+2. Turn on two-factor authentication for the publishing account.
+3. Open `action.yml` on GitHub and choose **Draft a release**. Tick **Publish this Action to the GitHub Marketplace**. If the box is disabled, accept the GitHub Marketplace Developer Agreement from the link beside it.
+4. Wait for **Everything looks good!**. Choose **Agent apps** as the primary category and **AI Assisted** as the other one.
+5. Tag `vX.Y.Z` and publish the release. [`release.yml`](.github/workflows/release.yml) then moves the tag `vX` to that commit. It skips pre-releases.
+
+Tick the Marketplace box on every release that should be listed. Keep the file name `action.yml`, because renaming it hides earlier versions on the listing. Keep the name "Run Golem"; the plain name "Golem" is a GitHub user's login.
 
 ## Development
 
@@ -175,4 +189,10 @@ python -m unittest discover -s tests
 
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs on Python 3.13: it checks `golem licence` against the sha256 of `authority.json`, then runs ruff, pyright, and pytest. Sandbox tests need Docker and `python:3.12-slim`.
 
-Recorded runs, including failed attempts, are in [`evidence/`](evidence/).
+## Support
+
+Report bugs, wrong or harmful answers, and questions in [issues](https://github.com/ofou/golem/issues). Report security problems privately, as [SECURITY.md](SECURITY.md) describes.
+
+## License
+
+Golem is released under the [MIT License](LICENSE). That is the software licence. `authority.json`, which this README calls the licence, is the policy file that bounds what tools may do.

@@ -3,6 +3,7 @@ name = "golem"
 version = "2026.10.08"
 description = "An agent that builds, tests, and keeps its own tools inside a frozen licence."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.13"
 dependencies = ["openrouter-agent-sdk==0.8.0", "openrouter==1.1.26"]
 

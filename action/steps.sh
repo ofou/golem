@@ -180,6 +180,9 @@ print(spent)' "$dir/events.jsonl")"
   if [ -n "$dir" ] && [ -f "$dir/result.md" ]; then out answer-file "$dir/result.md"; fi
   {
     echo "### Golem"
+    echo
+    echo "_Written by language models through OpenRouter. Check it before you rely on it. Report a wrong or harmful answer at https://github.com/ofou/golem/issues._"
+    echo
     echo "- task: $(head -c 300 <<<"$GOLEM_TASK" | tr '\n' ' ')"
     echo "- exit code: ${code:-none}"
     echo "- installed this run: ${installed:-none}"

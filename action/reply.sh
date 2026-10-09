@@ -29,6 +29,8 @@ esac
     echo "**Golem** did not finish (job ${RUN_RESULT:-not run}, exit ${EXIT_CODE:-none}) on \`$short\` · [run log]($run_url)"
   fi
   echo
+  echo "_Written by language models through OpenRouter. Check it before you rely on it. Report a wrong or harmful answer at https://github.com/ofou/golem/issues._"
+  echo
   echo "- tools installed: ${INSTALLED:-none}"
   echo "- spend: ${SPENT:-unknown}"
   echo "- registry: $registry"
