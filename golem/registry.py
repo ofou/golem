@@ -23,7 +23,9 @@ NAME = re.compile(r"^[a-z][a-z0-9_]{2,40}$")
 EXPORT_FORMAT = """The registry export is /registry/tools.json, /registry/usage.json, /registry/gaps.json (access "registry-read" only):
     tools.json  [{"name", "version", "active": bool, "manifest": {"name", "version", "access", "description",
                  "input_schema", "output_schema", "gap", "created_by"}, "receipt": {"passed": bool,
-                 "tests": {"ran", "ok"}, "blind_tests": {"ran", "ok"}, "stub_failed": float, "created_at"}}]
+                 "tests": {"ran", "ok"}, "blind_tests": {"ran", "ok"}, "stub_failed": float,
+                 "probes": [{"args": object or null, "ok": bool, "seconds"}], "created_at"}}]
+                 probes are the real calls the tool was proven on before install: example arguments for it.
                  A tool's gap {"task_quote", "why_needed", ...} is inside its manifest, never at the top level.
     usage.json  [{"ts", "run", "tool": "name@version", "ok": bool, "seconds"}]   one row per call of an installed tool
     gaps.json   [{"ts", "run", "tool": "name@version", "gap": {"task_quote", "why_needed", ...}}]"""
@@ -183,6 +185,10 @@ class Registry:
                         },
                     }
                 )
+                tools[-1]["receipt"]["probes"] = [
+                    {key: probe.get(key) for key in ("args", "ok", "seconds")}
+                    for probe in receipt.get("probes") or []
+                ]
         _write_json(dest / "tools.json", tools)
         _write_json(dest / "usage.json", self.journal("usage"))
         _write_json(dest / "gaps.json", self.journal("gaps"))

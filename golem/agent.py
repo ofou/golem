@@ -17,7 +17,7 @@ from openrouter_agent import (
 )
 from openrouter_agent.hooks_types import HookEntry
 
-from golem import kernel, snapshot
+from golem import kernel, schema, snapshot
 from golem.licence import Licence, unchanged
 from golem.registry import EXPORT_FORMAT, Registry
 from golem.sandbox import Sandbox
@@ -32,6 +32,9 @@ INSTRUCTIONS = """You are Golem, an agent working inside one software repository
 How you work:
 - Read files with list_files and read_file. Attachments are under _inputs/.
 - Use an installed Golem tool whenever one fits. Installed tools are listed below and are callable directly.
+- Installed tools compose. Each lists what it returns; pass the values one tool returns as another tool's arguments.
+  Before make_tool, check whether installed tools, alone or chained, already answer the task. If an installed tool
+  returns an error, read it and retry with corrected arguments before you consider revising it.
 - When the task needs an exact, repeatable operation you would otherwise do by hand or guess (parsing, mapping, resolving,
   counting, cross-referencing), and no installed tool does it, build it with make_tool. Copy the words of the task the tool
   serves into gap.task_quote. Do not build tools the task does not need.
@@ -39,13 +42,18 @@ How you work:
   It runs in a sandbox with no network, no environment, no subprocess, and a read-only filesystem.
   Repository file X is at /repo/X (access "repository-read" only). Attachment _inputs/Y is at /inputs/Y (all tools).
   """ + EXPORT_FORMAT + """
-  Do not build tools to probe what a file contains; read it, or rely on the formats above.
+  Do not build tools to find out what a file contains; read it, or rely on the formats above.
   Use the least access that works. Prefer arguments over hardcoded paths.
   Make each tool do one thing (read one input format, or resolve one relation) so later tasks can reuse and chain it.
 - tests: test_tool.py with unittest, `from tool import run`, at least 3 tests asserting concrete values. Tests must fail
-  against a stub that raises. Another model writes blind tests for the same interface; you will see their failures.
+  against a stub that raises. Arguments that break input_schema never reach run(): the call raises ValueError, as a
+  real call is refused. Test invalid input only that way, and declare in input_schema everything run() accepts.
+  Another model writes blind tests for the same interface; you will see their failures.
   If a blind test asserts something false about the real inputs, call make_tool again with disputes=[{test, reason}]
   citing the evidence. The test writer re-checks; only tests it agrees are wrong are dropped, and drops are recorded.
+- probe: 1-3 argument objects for the real calls this task makes with the tool. They run on the real repository and
+  attachments exactly as installed calls will, and an error or a result that breaks output_schema fails the candidate.
+  You see each result. Install only when they answer the task; otherwise fix the code and call make_tool again.
 - When make_tool passes, call install_tool. The session then ends and a fresh session continues with the tool loaded,
   so end that turn with a short handoff: what is done, what is left.
 - Final answer: the result for the task, short and concrete, then one line listing the Golem tools you used and created.
@@ -200,12 +208,24 @@ async def run_task(run: kernel.Run) -> str:
 
 
 def _listing(run: kernel.Run) -> str:
+    """One line per installed tool: what it does, what it returns, and how its calls have gone."""
     rows = run.registry.listing()
     if not rows:
         return "(none yet)"
-    return "\n".join(
-        json.dumps(
-            {key: row[key] for key in ("name", "version", "access", "description")}
+    usage = run.registry.journal("usage")
+    lines = []
+    for row in rows:
+        ref = f"{row['name']}@{row['version']}"
+        calls = [item for item in usage if item.get("tool") == ref]
+        lines.append(
+            json.dumps(
+                {
+                    **{key: row[key] for key in ("name", "version", "access", "description")},
+                    "returns": schema.outline(row["output_schema"])[:600],
+                    "calls": len(calls),
+                    "failed_calls": sum(1 for item in calls if not item.get("ok")),
+                },
+                ensure_ascii=False,
+            )
         )
-        for row in rows
-    )
+    return "\n".join(lines)

@@ -125,6 +125,33 @@ class SchemaTest(unittest.TestCase):
         self.assertTrue(schema.check_schema(declared))
         self.assertEqual(schema.validate({"path": "x"}, declared), [])
 
+    def test_outline_is_a_one_line_signature_of_what_a_tool_returns(self):
+        returns = {
+            "type": "object",
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "job": {"type": "string"},
+                            "most": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["job"],
+                    },
+                },
+                "by_file": {"type": "object", "additionalProperties": {"type": "integer"}},
+                "note": {"type": ["string", "null"]},
+            },
+            "required": ["jobs", "by_file"],
+        }
+        self.assertEqual(
+            schema.outline(returns),
+            "{jobs: [{job: string, most?: [string]}], by_file: {*: integer}, note?: string | null}",
+        )
+        self.assertEqual(schema.outline({"type": "array"}), "array")
+        self.assertEqual(schema.outline(None), "any")
+
 
 class RegistryTest(unittest.TestCase):
     def setUp(self):

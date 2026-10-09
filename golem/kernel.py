@@ -2,10 +2,12 @@
 
 The model starts with four kernel tools:
     list_files, read_file    read the repository snapshot and the task's attachments
-    make_tool                create a tool and prove it in the sandbox
+    make_tool                create a tool and prove it in the sandbox, on tests and on real calls
     install_tool             install the exact bytes that passed
 
-Every installed tool is loaded as one more tool, executed in the sandbox.
+Every installed tool is loaded as one more tool, executed in the sandbox. A candidate's probes
+and an installed tool's calls go through the same call_tool, so a tool that passed its probes
+has already made the calls the task needs once, the way they will be made after install.
 """
 
 from __future__ import annotations
@@ -37,6 +39,9 @@ MAX_DROPS_PER_SUITE = 2
 DISPUTE_BUDGET_USD = 0.10
 MIN_USD_TO_MAKE = 0.03
 MAX_SENDBACKS_PER_TASK = 2
+MAX_PROBES = 3
+PROBE_PREVIEW_CHARS = 1500
+PROBE_ARGS_KEPT_CHARS = 4000
 
 
 @dataclass
@@ -89,6 +94,24 @@ class Run:
                 )
                 + "\n"
             )
+
+    def log_call(self, tool_ref: str, args: dict, outcome: dict) -> None:
+        """Every installed-tool call with its arguments and result, so a later check can see
+        whether a value one tool returned became another tool's argument."""
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        row = {"ts": round(time.time(), 3), "tool": tool_ref, "args": args, "ok": bool(outcome.get("ok"))}
+        if outcome.get("ok"):
+            row["result"] = outcome.get("result")
+        else:
+            row["error"] = outcome.get("error")
+        with open(self.run_dir / "calls.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+
+    def refresh_export(self) -> None:
+        """Registry-read tools see the registry as it is now, including tools installed and
+        calls made earlier in this run."""
+        if self.sandbox.registry_export is not None:
+            self.registry.export(self.sandbox.registry_export)
 
     def charge(self, usd: float, source: str) -> None:
         self.spent += float(usd or 0.0)
@@ -204,6 +227,15 @@ MAKE_TOOL_SCHEMA = {
             "type": "string",
             "description": "Name of an installed tool this becomes a new version of, if any",
         },
+        "probe": {
+            "type": "array",
+            "description": (
+                f"1-{MAX_PROBES} argument objects for the real calls this task makes with the tool. Each runs on the real "
+                "repository and attachments exactly as an installed call would, and an error or a result that breaks "
+                "output_schema fails the candidate. You see each result: install only when they answer the task."
+            ),
+            "items": {"type": "object"},
+        },
         "disputes": {
             "type": "array",
             "description": "Blind tests you believe assert something false about the real inputs. The test writer re-checks each one; only tests it agrees are wrong are dropped, and every drop is recorded.",
@@ -226,6 +258,7 @@ MAKE_TOOL_SCHEMA = {
         "code",
         "tests",
         "gap",
+        "probe",
     ],
 }
 
@@ -248,9 +281,17 @@ def make_tool_tool(run: Run):
 
 async def _make_tool(run: Run, args: dict) -> dict:
     args = _decode_json_fields(
-        args, ("input_schema", "output_schema", "gap", "disputes")
+        args, ("input_schema", "output_schema", "gap", "disputes", "probe")
     )
     name = str(args.get("name", ""))
+    missing = [key for key in MAKE_TOOL_SCHEMA["required"] if key not in args and key != "probe"]
+    if missing:
+        return _refuse(
+            run,
+            name,
+            f"make_tool arrived without {', '.join(missing)} (it got: {', '.join(sorted(args)) or 'nothing'}). "
+            "If you sent them, the call was cut off or was not valid JSON: send it again with shorter code and tests.",
+        )
     limit_made, limit_attempts = (
         run.licence.budget("max_make_tool_per_task"),
         run.licence.budget("max_attempts_per_tool"),
@@ -300,6 +341,25 @@ async def _make_tool(run: Run, args: dict) -> dict:
             if args.get(f"_{key}_error")
         ]
         return _refuse(run, name, "; ".join(problems[:6] + parse_errors))
+    probes = args.get("probe")
+    if (
+        not isinstance(probes, list)
+        or not 1 <= len(probes) <= MAX_PROBES
+        or not all(isinstance(item, dict) for item in probes)
+    ):
+        return _refuse(
+            run,
+            name,
+            f"probe: give 1-{MAX_PROBES} argument objects for the real calls this task makes with the tool; "
+            "each runs on the real repository and attachments before the tool can be installed",
+        )
+    bad_probes = [
+        f"probe {index}: " + "; ".join(found[:3])
+        for index, item in enumerate(probes, 1)
+        if (found := schema.validate(item, args["input_schema"]))
+    ]
+    if bad_probes:
+        return _refuse(run, name, "; ".join(bad_probes))
 
     manifest = {
         "name": name,
@@ -463,6 +523,20 @@ async def _make_tool(run: Run, args: dict) -> dict:
         "stub",
         f"against stubs that raise or return {{}}: {total - len(survivors)}/{total} tests fail on both (need >= {int(MIN_STUB_FAIL_RATIO * 100)}%)",
     )
+    if manifest["access"] == "registry-read":
+        run.refresh_export()
+    probed = [
+        (item, call_tool(run.sandbox, folder, manifest, item)) for item in probes
+    ]
+    run.say(
+        "probe",
+        f"{name}@{manifest['version']}: {sum(1 for _a, out in probed if out.get('ok'))}/{len(probed)} real calls ok"
+        + "".join(
+            f" | {json.dumps(item, ensure_ascii=False)[:120]} -> "
+            + ("ok" if out.get("ok") else f"{out.get('error', '')[:160]}")
+            for item, out in probed
+        ),
+    )
 
     reasons = []
     if not own.passed:
@@ -475,6 +549,12 @@ async def _make_tool(run: Run, args: dict) -> dict:
         reasons.append(
             f"vacuous tests pass without any implementation: {', '.join(survivors[:8])}"
         )
+    for index, (_item, out) in enumerate(probed, 1):
+        if not out.get("ok"):
+            reasons.append(
+                f"probe {index}: {out.get('error', '')[:300]}"
+                + (f" ({'; '.join(out['problems'][:3])})" if out.get("problems") else "")
+            )
     passed = not reasons
 
     files = {
@@ -487,6 +567,7 @@ async def _make_tool(run: Run, args: dict) -> dict:
         "tests": {"ran": own.ran, "ok": len(own.ok)},
         "blind_tests": {"ran": blind_report.ran, "ok": len(blind_report.ok)},
         "stub_failed": round(stub_ratio, 3),
+        "probes": [_probe_record(item, out) for item, out in probed],
         "blind_tests_dropped": run.dropped.get(suite_key, []),
         "jev_gate": manifest["gap"].get("jev"),
         "sandbox": own.command,
@@ -523,7 +604,9 @@ async def _make_tool(run: Run, args: dict) -> dict:
             "attempt": attempt,
             "tests": own.summary(),
             "blind_tests": blind_report.summary(),
-            "next": "Call install_tool with this candidate_id.",
+            "probes": [_probe_view(item, out) for item, out in probed],
+            "next": "Check that the probe results answer the task. If they do, call install_tool with this candidate_id; "
+            "if not, fix the code and call make_tool again.",
         }
     return {
         "status": "failed",
@@ -539,7 +622,9 @@ async def _make_tool(run: Run, args: dict) -> dict:
             }
             for item in blind_report.failed[:8]
         ],
-        "next": "Fix the code (or your tests) and call make_tool again with the same name. "
+        "probes": [_probe_view(item, out) for item, out in probed],
+        "next": "Fix the code (or your tests) and call make_tool again with the same name and the same interface: "
+        "a changed input_schema, output_schema, or access gets a new blind suite. "
         "Blind test messages are withheld; each failure lists the run(...) calls it makes, not what it expects. "
         "Decide from the task, the inputs, and your input_schema what those calls should return, or dispute with evidence.",
     }
@@ -708,6 +793,7 @@ def install_tool_tool(run: Run):
         installed = run.registry.install(
             candidate.folder, candidate.manifest, candidate.receipt
         )
+        run.refresh_export()
         run.registry.record(
             "gaps",
             {"run": run.run_id, "tool": installed, "gap": candidate.manifest["gap"]},
@@ -744,7 +830,8 @@ def installed_tools(run: Run) -> list:
         loaded.append(
             tool(
                 name=name,
-                description=f"{manifest['description']} [Golem tool {name}@{version}, {manifest['access']}]",
+                description=f"{manifest['description']} Returns {schema.outline(manifest['output_schema'])[:600]}"
+                f" [Golem tool {name}@{version}, {manifest['access']}]",
                 input_schema=manifest["input_schema"],
                 execute=_proxy(run, name, version, manifest),
             )
@@ -756,22 +843,11 @@ def _proxy(run: Run, name: str, version: str, manifest: dict):
     bundle = run.registry.bundle(name, version)
 
     def call(args, _context=None):
-        problems = schema.validate(args, manifest["input_schema"])
-        if problems:
-            return {
-                "error": "arguments do not match the input schema",
-                "problems": problems,
-            }
-        outcome = run.sandbox.invoke(bundle, manifest["access"], args)
-        if outcome.get("ok"):
-            problems = schema.validate(outcome["result"], manifest["output_schema"])
-            if problems:
-                outcome = {
-                    "ok": False,
-                    "error": "output does not match the output schema",
-                    "problems": problems,
-                    "seconds": outcome.get("seconds"),
-                }
+        if manifest["access"] == "registry-read":
+            run.refresh_export()
+        outcome = call_tool(run.sandbox, bundle, manifest, args)
+        if outcome.get("refused"):
+            return {"error": outcome["error"], "problems": outcome["problems"]}
         run.registry.record(
             "usage",
             {
@@ -781,6 +857,7 @@ def _proxy(run: Run, name: str, version: str, manifest: dict):
                 "seconds": outcome.get("seconds"),
             },
         )
+        run.log_call(f"{name}@{version}", args, outcome)
         run.used.append(f"{name}@{version}")
         run.say(
             "call",
@@ -796,6 +873,67 @@ def _proxy(run: Run, name: str, version: str, manifest: dict):
         )
 
     return call
+
+
+def call_tool(sandbox: Sandbox, bundle: Path, manifest: dict, args: dict) -> dict:
+    """One call of a tool: the arguments checked against input_schema (refused before anything
+    runs), the call in the sandbox, the result checked against output_schema. Installed calls,
+    a candidate's probes, and `golem verify` all go through here."""
+    problems = schema.validate(args, manifest["input_schema"])
+    if problems:
+        return {
+            "ok": False,
+            "refused": True,
+            "error": "arguments do not match the input schema",
+            "problems": problems,
+        }
+    outcome = sandbox.invoke(bundle, manifest["access"], args)
+    if outcome.get("ok"):
+        problems = schema.validate(outcome["result"], manifest["output_schema"])
+        if problems:
+            return {
+                "ok": False,
+                "error": "output does not match the output schema",
+                "problems": problems,
+                "seconds": outcome.get("seconds"),
+            }
+    return outcome
+
+
+def result_digest(result: object) -> str:
+    return _hash(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
+
+
+def _probe_record(args: dict, outcome: dict) -> dict:
+    """What the receipt keeps of a probe: the call itself, so `golem verify` can make it again,
+    and a digest of what it returned, so a changed result shows."""
+    text = json.dumps(args, ensure_ascii=False, sort_keys=True)
+    record = {
+        "args": args if len(text) <= PROBE_ARGS_KEPT_CHARS else None,
+        "args_sha256": _hash(text),
+        "ok": bool(outcome.get("ok")),
+        "seconds": outcome.get("seconds"),
+    }
+    if outcome.get("ok"):
+        record["result_sha256"] = result_digest(outcome.get("result"))
+    else:
+        record["error"] = str(outcome.get("error", ""))[:400]
+    return record
+
+
+def _probe_view(args: dict, outcome: dict) -> dict:
+    """What the builder sees of a probe: the call and its result, cut to a preview."""
+    if not outcome.get("ok"):
+        return {
+            "args": args,
+            "ok": False,
+            "error": outcome.get("error"),
+            "problems": outcome.get("problems", [])[:6],
+        }
+    text = json.dumps(outcome.get("result"), ensure_ascii=False, default=str)
+    if len(text) > PROBE_PREVIEW_CHARS:
+        text = text[:PROBE_PREVIEW_CHARS] + f"... ({len(text)} characters in all)"
+    return {"args": args, "ok": True, "result": text}
 
 
 def _refuse(run: Run, name: str, reason: str) -> dict:

@@ -22,8 +22,14 @@ You may read the repository and attachments with list_files and read_file to fin
 
 Write ONE Python file, test_blind.py, using only the standard library and unittest:
 - `from tool import run`; `run(args: dict) -> dict`.
-- At least 4 tests. Each asserts concrete expected values taken from real files or from inputs you construct, not just types.
-- Cover the main case, an edge case, and invalid or missing input as the schemas describe it.
+- At least 4 tests. Each asserts concrete expected values, not just types.
+- Use expected values you are certain of. You cannot run code, so do not count, sum, or rank over many lines of a real
+  file by reading it. Build small inputs under /tmp that copy the real files' format exactly (prefixes, escape codes,
+  odd lines) and whose answer you know, and assert on a real file only for a value you can read directly off a few lines.
+- Cover the main case, an edge case, and invalid or missing input as the schemas describe it. Arguments that break
+  input_schema are refused with ValueError before run() starts, exactly as a real call is: test them only with
+  assertRaises(ValueError), and never expect a result from arguments the schema forbids (a string where it says array,
+  a missing required field, an empty list below minItems, a Path object).
 - Inside the test sandbox, repository file `X` is at `/repo/X` (repository-read tools only), attachment `_inputs/Y` is at `/inputs/Y`, the registry export is at `/registry/` (registry-read tools only). No network, no writes outside /tmp.
 - For a registry-read tool, the brief carries registry_export_format. Fixtures you build must follow it exactly.
 - Never test private helpers. Never import anything except unittest, tool, and other standard-library modules.

@@ -120,6 +120,36 @@ def validate(value: object, schema: dict, where: str = "$") -> list[str]:
     return errors[:20]
 
 
+def outline(schema: object, depth: int = 0) -> str:
+    """A one-line signature of a schema, e.g. {jobs: [{job: string, most?: [string]}]}. It is
+    what an installed tool returns, short enough to list beside every tool, so a session can see
+    which tool's output fields fit another tool's arguments without calling either."""
+    if not isinstance(schema, dict):
+        return "any"
+    kind = schema.get("type")
+    kinds = [item for item in (kind if isinstance(kind, list) else [kind]) if isinstance(item, str)]
+    parts = []
+    for item in kinds or ["any"]:
+        if item == "object" and depth < 5:
+            props = schema.get("properties")
+            props = props if isinstance(props, dict) else {}
+            required = schema.get("required")
+            required = {name for name in required if isinstance(name, str)} if isinstance(required, list) else set()
+            fields = [
+                f"{name}{'' if name in required else '?'}: {outline(sub, depth + 1)}"
+                for name, sub in props.items()
+            ]
+            extra = schema.get("additionalProperties")
+            if isinstance(extra, dict):
+                fields.append(f"*: {outline(extra, depth + 1)}")
+            parts.append("{" + ", ".join(fields) + "}" if fields else "object")
+        elif item == "array" and depth < 5 and isinstance(schema.get("items"), dict):
+            parts.append(f"[{outline(schema['items'], depth + 1)}]")
+        else:
+            parts.append(item)
+    return " | ".join(parts)
+
+
 def _is_type(value: object, kind: str) -> bool:
     if kind == "object":
         return isinstance(value, dict)

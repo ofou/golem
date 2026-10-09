@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from golem import auth, snapshot
+from golem import auth, schema, snapshot
 from golem import licence as licence_mod
 from golem.registry import Registry
 from golem.sandbox import Sandbox
@@ -186,7 +186,7 @@ def _credits() -> int:
 def _verify(repo: Path, registry: Registry, lic, attachments: list[Path]) -> int:
     """Re-prove every installed tool without any model or key: its files still hash to the
     receipt, its own and blind tests pass in the sandbox, and they still fail against stubs."""
-    from golem.kernel import MIN_STUB_FAIL_RATIO
+    from golem.kernel import MIN_STUB_FAIL_RATIO, call_tool, result_digest
 
     active = registry.active()
     if not active:
@@ -227,18 +227,39 @@ def _verify(repo: Path, registry: Registry, lic, attachments: list[Path]) -> int
             survivors = {test for report in stubs for test in report.ok}
             total = max((report.ran for report in stubs), default=0)
             stub_ratio = (total - len(survivors)) / total if total else 0.0
+            prober = Sandbox(lic, snap, export)
+            probes = [
+                (item, call_tool(prober, bundle, manifest, item["args"]))
+                for item in receipt.get("probes") or []
+                if item.get("args") is not None
+            ]
+            probes_ok = sum(1 for _item, out in probes if out.get("ok"))
+            unchanged = sum(
+                1
+                for item, out in probes
+                if out.get("ok") and result_digest(out["result"]) == item.get("result_sha256")
+            )
             ok = (
                 same
                 and own.passed
                 and blind.passed
                 and stub_ratio >= MIN_STUB_FAIL_RATIO
+                and probes_ok == len(probes)
             )
             failures += not ok
             command = own.command
             print(
                 f"{name}@{version}: {'OK' if ok else 'FAIL'} | files {'match the receipt' if same else 'CHANGED since they were tested'}"
                 f" | own {own.summary()} | blind {blind.summary()} | stubs fail {int(stub_ratio * 100)}%"
+                + (
+                    f" | probes {probes_ok}/{len(probes)} ok, {unchanged}/{len(probes)} return what they returned when tested"
+                    if probes
+                    else ""
+                )
             )
+            for item, out in probes:
+                if not out.get("ok"):
+                    print(f"    probe {json.dumps(item['args'])[:120]}: {out.get('error', '')[:160]}")
             for item in (own.failed + blind.failed)[:6]:
                 print(f"    {item['status']} {item['test']}: {item['message'][:160]}")
         print(f"sandbox: {command}")
@@ -261,9 +282,11 @@ def _print_registry(registry: Registry) -> int:
             f"{name}@{version}  [{manifest['access']}]  versions: {', '.join(registry.versions(name))}"
         )
         print(f"    {manifest['description']}")
+        print(f"    returns {schema.outline(manifest['output_schema'])[:300]}")
         print(
             f"    tests {receipt['tests']['ok']}/{receipt['tests']['ran']}, blind {receipt['blind_tests']['ok']}/{receipt['blind_tests']['ran']}, "
-            f"stub failed {int(receipt['stub_failed'] * 100)}% | calls {len(calls)}, errors {sum(1 for row in calls if not row['ok'])}"
+            f"stub failed {int(receipt['stub_failed'] * 100)}%, probes {sum(1 for p in receipt.get('probes') or [] if p.get('ok'))}/{len(receipt.get('probes') or [])} | "
+            f"calls {len(calls)}, errors {sum(1 for row in calls if not row['ok'])}"
         )
         print(f"    gap: {json.dumps(manifest['gap'].get('task_quote', ''))}")
     return 0

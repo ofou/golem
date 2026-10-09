@@ -45,9 +45,9 @@ golem credits
 
 `login` uses OpenRouter's OAuth PKCE flow and stores the key at `${XDG_CONFIG_HOME:-~/.config}/golem/openrouter.key` with mode `0600`. The key is not printed. `OPENROUTER_API_KEY`, when set, takes precedence. Set a spending limit on the key at [openrouter.ai](https://openrouter.ai); the login flow has no limit field. Golem's per-task cap still applies. `--headless` prints a code to paste. The Docker wrapper uses that mode.
 
-`verify` re-runs every installed tool's tests in the sandbox and checks the files against the receipt. It does not need an API key. `--attach` supplies files the tests read under `/inputs`. A matching install prints `OK`. An edited file fails with `CHANGED since they were tested`.
+`verify` re-runs every installed tool's tests and its recorded probes in the sandbox, and checks the files against the receipt. It does not need an API key. `--attach` supplies files the tests and probes read under `/inputs`. A matching install prints `OK`. An edited file fails with `CHANGED since they were tested`. A probe that now returns something else is reported, not failed: the repository or the inputs changed since the tool was tested.
 
-A run writes its answer to `.golem/runs/<run_id>/result.md`.
+A run writes its answer to `.golem/runs/<run_id>/result.md`, its events to `events.jsonl`, and every installed-tool call with its arguments and result to `calls.jsonl`.
 
 ## How a tool is made
 
@@ -58,8 +58,9 @@ A session starts with four kernel tools: `list_files`, `read_file`, `make_tool`,
 3. **Advisor.** `typesafe/jev-1.13`, called through OpenRouter's Decisions API, may send a proposal back once. It does not approve an install. If the advisor is unavailable, the build continues.
 4. **Blind tests.** A tester model writes `test_blind.py` from the interface, the task, and the repository. It does not see the implementation. On failure, the builder receives the test name and the exception type.
 5. **Sandbox.** Golem runs the builder's tests, the blind tests, and the same tests against two stubs that must fail them. The builder's suite must contain at least 3 tests, and at least 80% of the tests must fail on both stubs.
-6. **Install.** `install_tool` checks that the files still hash to what was tested, writes `.golem/registry/NAME/VERSION/`, and points `.golem/registry/active.json` at that version. The first version of a name is `0.1.0`. Each later version bumps the minor number.
-7. **Next session.** A new session starts only after an install, while sessions and budget remain. It loads installed tools from disk and calls them in the sandbox.
+6. **Probes.** `make_tool` requires 1 to 3 `probe` argument objects: the real calls the task makes with the tool. Each runs on the real repository and attachments through the same path an installed call takes: arguments checked against the input schema, the call in the sandbox, the result checked against the output schema. A probe that errors fails the candidate. The builder sees each result before it installs. The receipt keeps the calls and a digest of each result.
+7. **Install.** `install_tool` checks that the files still hash to what was tested, writes `.golem/registry/NAME/VERSION/`, and points `.golem/registry/active.json` at that version. The first version of a name is `0.1.0`. Each later version bumps the minor number.
+8. **Next session.** A new session starts only after an install, while sessions and budget remain. It loads installed tools from disk and calls them in the sandbox. Each installed tool is listed with what it returns, as a one-line signature, and how many of its calls failed, so a session can chain one tool's output into another's arguments.
 
 The sandbox is:
 
@@ -106,6 +107,22 @@ Golem sends the task, the file paths it lists, the files it reads, tool output, 
 
 On GitHub Actions, GitHub keeps the run logs, the summary, the artifact, and the registry cache under the [GitHub Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement). On a public repository they are public. Golem sends nothing to its developer and has no telemetry.
 
+## Definition of done
+
+| Criterion | Where Golem does it | What `scripts/dod_check.py` reads |
+| --- | --- | --- |
+| A task exposes a missing capability | `make_tool` takes a gap that quotes the task | An installed tool whose gap quotes the task of the run that built it |
+| The agent creates, tests and registers it, then completes the task | Own tests, blind tests, stubs, and probes in the sandbox, then `install_tool`, then a fresh session answers | The receipt, the verdicts, and the run's `result.md` |
+| It builds tooling to discover and manage its capabilities | Registry-read tools it builds over `/registry`: manifests, receipts with probes, usage, and gaps | A registry-read tool that a run built and installed |
+| A fresh session combines earlier capabilities without rebuilding or wiring | Each new `golem run` loads the registry from disk and lists each tool with what it returns | A later run that called two or more tools built by earlier runs, with no `make_tool` call. From `calls.jsonl`, it also reports whether a value one tool returned became another tool's argument |
+| Nothing is wired by hand | The licence is read-only and hashed before and after each run | One licence sha256, unchanged in every run |
+
+`scripts/dod_demo.py` runs the whole sequence on aio-libs/aiohttp at the head of a failed CI run, with two of that run's job logs attached. Each task is a separate `golem run` on one registry, starting empty: skipped tests per test file in each log, the `aiohttp/` modules each test file imports, a reusable view of how the installed tools fit together, and then a different question that needs the first two together. No task names a tool or says what to build or reuse. The script then runs `scripts/dod_check.py`.
+
+```bash
+python scripts/dod_demo.py --evidence 2026-10-09-dod-ci-triage
+```
+
 ## GitHub Actions
 
 ### In your repository
@@ -126,7 +143,7 @@ Start a task from the Actions tab, with `gh workflow run golem.yml -f task="..."
 | --- | --- | --- | --- |
 | `gate` | no secret | `contents: read`, `issues: write` | Decides who may spend the key, reads the task from the comment, pins a pull request's head commit, reacts with 👀 |
 | `run` | `OPENROUTER_API_KEY` | `contents: read`, `actions: read` | Restores the registry, runs the task, saves a new snapshot, uploads the run as an artifact |
-| `verify` | no secret | `contents: read` | Re-runs every installed tool's tests in the sandbox on a runner that never had the key |
+| `verify` | no secret | `contents: read` | Re-runs every installed tool's tests and probes in the sandbox on a runner that never had the key |
 | `reply` | no secret | `contents: read`, `issues: write` | Answers the comment |
 
 The job with the key cannot push, comment, or open a pull request. Golem's code is checked out at the commit the caller pinned (`job.workflow_sha`). Every action is pinned to a full commit SHA.

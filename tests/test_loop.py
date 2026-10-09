@@ -79,6 +79,7 @@ def args(**overrides):
             "task_quote": "name the failing tests",
             "why_needed": "exact count and ids, not a guess",
         },
+        "probe": [{"log_file": "build.log"}],
     }
     base.update(overrides)
     return base
@@ -95,8 +96,10 @@ class LoopTest(unittest.TestCase):
         log.write_text(
             "ok tests/test_c.py::test_z\nFAILED tests/test_a.py::test_x\nFAILED tests/test_b.py::test_y\n"
         )
+        clean = self.tmp / "clean.log"
+        clean.write_text("ok tests/test_c.py::test_z\n")
         snap = self.tmp / "snap"
-        files = snapshot.build(repo, snap, [log])
+        files = snapshot.build(repo, snap, [log, clean])
         lic = licence.load(ROOT / "authority.json")
         registry = Registry(repo / ".golem")
         self.run_ = kernel.Run(
@@ -144,6 +147,7 @@ class LoopTest(unittest.TestCase):
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(cli.main(argv), 0, out.getvalue())
         self.assertIn("count_failures@0.1.0: OK", out.getvalue())
+        self.assertIn("probes 1/1 ok, 1/1 return what they returned when tested", out.getvalue())
         tool_file = self.run_.registry.bundle("count_failures", "0.1.0") / "tool.py"
         tool_file.chmod(0o644)
         tool_file.write_text(tool_file.read_text() + "\n# edited after install\n")
@@ -180,6 +184,73 @@ class LoopTest(unittest.TestCase):
             ),
             (3, 4, 1.0),
         )
+        self.assertEqual(receipt["probes"][0]["args"], {"log_file": "build.log"})
+        self.assertEqual(receipt["probes"][0]["result_sha256"], kernel.result_digest(result))
+        calls = [
+            json.loads(line)
+            for line in (self.run_.run_dir / "calls.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual(
+            (calls[-1]["tool"], calls[-1]["args"], calls[-1]["result"]),
+            ("count_failures@0.1.0", {"log_file": "build.log"}, result),
+        )
+
+    def test_the_builder_sees_its_probes_answer_on_the_real_inputs(self):
+        made = self.make()
+        self.assertEqual(made["status"], "passed", made)
+        self.assertEqual(
+            made["probes"],
+            [
+                {
+                    "args": {"log_file": "build.log"},
+                    "ok": True,
+                    "result": json.dumps(
+                        {"failures": 2, "tests": ["tests/test_a.py::test_x", "tests/test_b.py::test_y"]}
+                    ),
+                }
+            ],
+        )
+
+    def test_a_tool_that_passes_its_tests_but_fails_a_real_call_is_not_installable(self):
+        made = self.make(probe=[{"log_file": "build.log"}, {"log_file": "ci.log"}])
+        self.assertEqual(made["status"], "failed", made)
+        self.assertTrue(
+            any(reason.startswith("probe 2: FileNotFoundError") for reason in made["reasons"]),
+            made["reasons"],
+        )
+        self.assertEqual(
+            [item["ok"] for item in made["probes"]], [True, False]
+        )
+        install = kernel.install_tool_tool(self.run_)["function"]["execute"](
+            {"candidate_id": made["candidate_id"]}
+        )
+        self.assertEqual(install["status"], "refused")
+
+    def test_a_probe_result_that_breaks_the_output_schema_fails_the_candidate(self):
+        made = self.make(
+            code=CODE.replace('"tests": names}', '"tests": names or None}'),
+            probe=[{"log_file": "build.log"}, {"log_file": "clean.log"}],
+        )
+        self.assertEqual(made["status"], "failed", made)
+        self.assertEqual(made["reasons"], [
+            "probe 2: output does not match the output schema ($.tests: expected array, got NoneType)"
+        ])
+
+    def test_a_call_that_arrives_without_its_arguments_says_so(self):
+        made = asyncio.run(kernel._make_tool(self.run_, {}))
+        self.assertEqual(made["status"], "refused")
+        self.assertIn("arrived without name, description", made["reason"])
+        self.assertIn("cut off", made["reason"])
+        self.assertEqual((self.run_.made, sum(self.run_.attempts.values())), (0, 0))
+
+    def test_a_missing_or_malformed_probe_is_refused_without_spending_an_attempt(self):
+        missing = self.make(probe=None)
+        self.assertEqual(missing["status"], "refused")
+        self.assertIn("probe", missing["reason"])
+        wrong = self.make(probe=[{"path": "build.log"}])
+        self.assertEqual(wrong["status"], "refused")
+        self.assertIn("probe 1: $: missing required 'log_file'", wrong["reason"])
+        self.assertEqual((self.run_.made, sum(self.run_.attempts.values())), (0, 0))
 
     def test_privilege_request_is_refused_before_anything_runs(self):
         made = self.make(code="import urllib.request\n" + CODE)

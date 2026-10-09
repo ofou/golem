@@ -15,7 +15,9 @@ checkout (build, build, manage, combine) and then invoke this script.
   3  the agent built tooling to discover or manage its capabilities: a registry-read
      tool it made and installed itself
   4  in a later run (a new process), a different task called at least two tools that
-     earlier runs built, and made no make_tool call at all
+     earlier runs built, and made no make_tool call at all. The report also says whether
+     they were chained: a value one tool returned, not in the task text, became an
+     argument of the next tool (from that run's calls.jsonl)
   5  nothing was wired by hand: every run reports the same licence sha256, unchanged
 """
 
@@ -62,6 +64,7 @@ def load(repo: Path) -> tuple[list[dict], dict, list[dict]]:
                 "task": task,
                 "events": events,
                 "answer": answer,
+                "calls": _jsonl(folder / "calls.jsonl"),
                 "makes": [
                     e
                     for e in events
@@ -96,6 +99,37 @@ def load(repo: Path) -> tuple[list[dict], dict, list[dict]]:
             "receipt": json.loads((folder / "receipt.json").read_text()),
         }
     return runs, tools, _jsonl(golem / "usage.jsonl")
+
+
+def _values(value: object, keys: bool) -> set[str]:
+    """Strings of four or more characters anywhere in a value, and, with keys, its object keys."""
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if keys and len(str(key)) >= 4:
+                found.add(str(key))
+            found |= _values(item, keys)
+    elif isinstance(value, list):
+        for item in value:
+            found |= _values(item, keys)
+    elif isinstance(value, str) and len(value) >= 4:
+        found.add(value)
+    return found
+
+
+def chains(run: dict) -> dict[tuple[str, str], set[str]]:
+    """For each pair of tools, the values an earlier call of the first returned that a later call
+    of the second took as arguments, leaving out values the task text itself contains."""
+    task = _norm(run["task"])
+    links: dict[tuple[str, str], set[str]] = {}
+    calls = [call for call in run["calls"] if call.get("ok")]
+    for later_index, later in enumerate(calls):
+        wanted = {value for value in _values(later.get("args"), keys=False) if _norm(value) not in task}
+        for earlier in calls[:later_index]:
+            shared = wanted & _values(earlier.get("result"), keys=True)
+            if shared and earlier["tool"] != later["tool"]:
+                links.setdefault((earlier["tool"], later["tool"]), set()).update(shared)
+    return links
 
 
 def check(repo: Path) -> int:
@@ -184,13 +218,21 @@ def check(repo: Path) -> int:
         ]
         earlier_tasks = {_norm(r["task"]) for r in runs if r["id"] < run["id"]}
         if len(earlier) >= 2:
+            links = [
+                f"{first} -> {second}: {len(shared)} returned value(s) passed on, e.g. {min(shared)[:60]!r}"
+                for (first, second), shared in sorted(chains(run).items())
+                if first in earlier and second in earlier
+            ]
             combined.append(
                 {
                     "ok": not run["makes"] and _norm(run["task"]) not in earlier_tasks,
                     "line": f"run {run['id']}: called {earlier} (built in runs {sorted({built_in[t] for t in earlier})}); "
-                    f"make_tool calls {len(run['makes'])}; different task: {_norm(run['task']) not in earlier_tasks}",
+                    f"make_tool calls {len(run['makes'])}; different task: {_norm(run['task']) not in earlier_tasks}; "
+                    "chained: "
+                    + ("yes" if links else "no, called side by side" if run["calls"] else "unknown, the run kept no calls.jsonl"),
                 }
             )
+            combined[-1]["line"] += "".join(f"\n          {link}" for link in links[:4])
     report(
         4,
         any(item["ok"] for item in combined),
