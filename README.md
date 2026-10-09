@@ -176,7 +176,7 @@ An optional `task2` runs as a new process on the same registry. A second job hol
 2. Turn on two-factor authentication for the publishing account.
 3. Open `action.yml` on GitHub and choose **Draft a release**. Tick **Publish this Action to the GitHub Marketplace**. If the box is disabled, accept the GitHub Marketplace Developer Agreement from the link beside it.
 4. Wait for **Everything looks good!**. Choose **Agent apps** as the primary category and **AI Assisted** as the other one.
-5. Tag `vX.Y.Z` and publish the release. [`release.yml`](.github/workflows/release.yml) then moves the tag `vX` to that commit. It skips pre-releases.
+5. Tag `vX.Y.Z` and publish the release. [`release.yml`](.github/workflows/release.yml) then moves the tag `vX` to that commit, when the release is published as a full release or a pre-release is promoted to one.
 
 Tick the Marketplace box on every release that should be listed. Keep the file name `action.yml`, because renaming it hides earlier versions on the listing. Keep the name "Run Golem"; the plain name "Golem" is a GitHub user's login.
 

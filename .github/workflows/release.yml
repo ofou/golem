@@ -1,11 +1,10 @@
 name: release
 on:
   release:
-    types: [published]
+    types: [released]
 permissions: {}
 jobs:
   major-tag:
-    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
