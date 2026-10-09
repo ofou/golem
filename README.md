@@ -197,6 +197,8 @@ An optional `task2` runs as a new process on the same registry. A second job hol
 
 Tick the Marketplace box on every release that should be listed. Keep the file name `action.yml`, because renaming it hides earlier versions on the listing. Keep the name "Run Golem"; the plain name "Golem" is a GitHub user's login.
 
+After the first listing, [`autorelease.yml`](.github/workflows/autorelease.yml) makes the release: start it from the Actions tab or with `gh workflow run autorelease.yml -f bump=minor`. It runs only on `main` and only when `tests` passed on that commit. It raises the newest `vX.Y.Z` tag by `patch`, `minor` or `major`, and writes the notes from the merged pull requests. It creates the release with `RELEASE_TOKEN`, a secret of the `release` environment: a fine-grained token of the publishing account with **Contents: Read and write** on this repository only. A release made with that account's token is listed like one published by hand, and it starts `release.yml`. A release made with `GITHUB_TOKEN` or a GitHub App token is not listed, because an app cannot pass the publisher's two-factor check. `-f draft=true` leaves the release as a draft to publish by hand.
+
 ## Development
 
 ```bash

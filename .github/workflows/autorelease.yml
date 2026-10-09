@@ -1,0 +1,55 @@
+name: autorelease
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the newest vX.Y.Z tag to raise
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      draft:
+        description: Leave the release as a draft, to publish it by hand
+        type: boolean
+        default: false
+permissions: {}
+concurrency:
+  group: autorelease
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          SHA: ${{ github.sha }}
+          BUMP: ${{ inputs.bump }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          [ -n "$RELEASE_TOKEN" ] || { echo "::error::Add RELEASE_TOKEN to the release environment: a fine-grained token of the Marketplace publisher, Contents read and write on this repository only"; exit 1; }
+          tests="$(gh run list --workflow tests.yml --commit "$SHA" --event push --limit 1 --json conclusion --jq '.[0].conclusion // ""')"
+          [ "$tests" = success ] || { echo "::error::tests on $SHA: ${tests:-not finished}"; exit 1; }
+          last="$(gh api "repos/$GH_REPO/tags?per_page=100" --jq '.[].name' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+          [ -n "$last" ] || { echo "::error::no vX.Y.Z tag to bump from"; exit 1; }
+          status="$(gh api "repos/$GH_REPO/compare/$last...$SHA" --jq .status)"
+          [ "$status" = ahead ] || { echo "::error::$SHA is $status of $last, so there is nothing to release"; exit 1; }
+          IFS=. read -r major minor patch <<< "${last#v}"
+          case "$BUMP" in
+            major) next="v$((major + 1)).0.0" ;;
+            minor) next="v$major.$((minor + 1)).0" ;;
+            *) next="v$major.$minor.$((patch + 1))" ;;
+          esac
+          if GH_TOKEN="$RELEASE_TOKEN" gh release view "$next" >/dev/null 2>&1; then
+            echo "::error::a release $next already exists, perhaps as a draft; publish or delete it first"
+            exit 1
+          fi
+          url="$(GH_TOKEN="$RELEASE_TOKEN" gh release create "$next" --target "$SHA" --title "$next" --generate-notes --notes-start-tag "$last" --draft="$DRAFT")"
+          echo "$last -> $next at $SHA (draft: $DRAFT): $url" | tee -a "$GITHUB_STEP_SUMMARY"
