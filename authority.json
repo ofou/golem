@@ -84,6 +84,12 @@
   "models": {
     "builder": "deepseek/deepseek-v4.1-flash",
     "tester": "deepseek/deepseek-v4.1-flash",
-    "advisor": "typesafe/jev-1.13"
+    "advisor": "typesafe/jev-1.13",
+    "builder_reasoning": {
+      "effort": "low"
+    },
+    "tester_reasoning": {
+      "effort": "low"
+    }
   }
 }
