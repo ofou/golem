@@ -19,7 +19,7 @@ from openrouter_agent.hooks_types import HookEntry
 
 from golem import kernel, snapshot
 from golem.licence import Licence, unchanged
-from golem.registry import Registry
+from golem.registry import EXPORT_FORMAT, Registry
 from golem.sandbox import Sandbox
 
 SDK_TURN_LIMIT = 20
@@ -38,12 +38,7 @@ How you work:
 - A tool is standard-library Python: tool.py defines run(args: dict) -> dict and returns JSON-serializable data.
   It runs in a sandbox with no network, no environment, no subprocess, and a read-only filesystem.
   Repository file X is at /repo/X (access "repository-read" only). Attachment _inputs/Y is at /inputs/Y (all tools).
-  The registry export is /registry/tools.json, /registry/usage.json, /registry/gaps.json (access "registry-read" only):
-    tools.json  [{"name", "version", "active": bool, "manifest": {"name", "version", "access", "description",
-                 "input_schema", "output_schema", "gap", "created_by"}, "receipt": {"passed": bool,
-                 "tests": {"ran", "ok"}, "blind_tests": {"ran", "ok"}, "stub_failed": float, "created_at"}}]
-    usage.json  [{"ts", "run", "tool": "name@version", "ok": bool, "seconds"}]   one row per call of an installed tool
-    gaps.json   [{"ts", "run", "tool": "name@version", "gap": {"task_quote", "why_needed", ...}}]
+  """ + EXPORT_FORMAT + """
   Do not build tools to probe what a file contains; read it, or rely on the formats above.
   Use the least access that works. Prefer arguments over hardcoded paths.
   Make each tool do one thing (read one input format, or resolve one relation) so later tasks can reuse and chain it.

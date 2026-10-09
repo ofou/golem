@@ -62,10 +62,11 @@ def build(repo: Path, dest: Path, attachments: list[Path] | None = None) -> list
         copied.append(rel)
     for attachment in attachments or []:
         attachment = Path(attachment)
-        target = dest / INPUTS / attachment.name
+        name = _unique_input_name(attachment.name, copied)
+        target = dest / INPUTS / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(attachment, target)
-        copied.append(f"{INPUTS}/{attachment.name}")
+        copied.append(f"{INPUTS}/{name}")
     return sorted(copied)
 
 
@@ -80,15 +81,17 @@ def _candidate_files(repo: Path) -> list[str]:
                 "-C",
                 str(repo),
                 "ls-files",
+                "-z",
                 "--cached",
                 "--others",
                 "--exclude-standard",
             ],
             capture_output=True,
-            text=True,
             check=True,
         ).stdout
-        files = [line for line in out.splitlines() if line]
+        files = [
+            item.decode("utf-8", "surrogateescape") for item in out.split(b"\0") if item
+        ]
         if files:
             return files
     except (OSError, subprocess.CalledProcessError):
@@ -96,13 +99,38 @@ def _candidate_files(repo: Path) -> list[str]:
     return [str(path.relative_to(repo)) for path in repo.rglob("*") if path.is_file()]
 
 
+KEEP_FOLDED = {name.casefold() for name in KEEP}
+SKIP_DIRS_FOLDED = {name.casefold() for name in SKIP_DIRS}
+
+
+def _secret_name(name: str) -> bool:
+    """Secret filenames, matched the same way on Linux and macOS."""
+    folded = name.casefold()
+    if folded in KEEP_FOLDED:
+        return False
+    return any(
+        fnmatch.fnmatchcase(folded, pattern.casefold()) for pattern in SKIP_PATTERNS
+    )
+
+
 def _skipped(rel: str) -> bool:
     parts = Path(rel).parts
-    if any(part in SKIP_DIRS for part in parts[:-1]):
+    if any(
+        part.casefold() in SKIP_DIRS_FOLDED or _secret_name(part) for part in parts[:-1]
+    ):
         return True
-    if parts[-1] in KEEP:
-        return False
-    return any(fnmatch.fnmatch(parts[-1], pattern) for pattern in SKIP_PATTERNS)
+    return _secret_name(parts[-1])
+
+
+def _unique_input_name(name: str, copied: list[str]) -> str:
+    """Two attachments can share a basename. Both have to survive under _inputs/."""
+    candidate = name
+    stem, suffix = Path(name).stem, Path(name).suffix
+    number = 2
+    while f"{INPUTS}/{candidate}" in copied:
+        candidate = f"{stem}-{number}{suffix}"
+        number += 1
+    return candidate
 
 
 def resolve(root: Path, rel: str) -> Path:

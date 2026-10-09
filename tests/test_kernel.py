@@ -2,6 +2,8 @@
 
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +11,8 @@ from pathlib import Path
 from golem import licence, lint, schema, snapshot
 from golem.kernel import _quotes_task
 from golem.registry import Registry, RegistryError
-from golem.sandbox import Sandbox
+from golem.sandbox import Sandbox, _parse_tests, _readable_by_sandbox
+from golem.sandbox_tests import MARK
 
 ROOT = Path(__file__).resolve().parents[1]
 LICENCE = licence.load(ROOT / "authority.json")
@@ -111,6 +114,17 @@ class SchemaTest(unittest.TestCase):
             [],
         )
 
+    def test_properties_and_required_must_be_objects_and_lists(self):
+        self.assertTrue(schema.check_schema({"type": "object", "properties": ["path"]}))
+        self.assertTrue(schema.check_schema({"type": "object", "properties": "path"}))
+        declared = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": "path",
+        }
+        self.assertTrue(schema.check_schema(declared))
+        self.assertEqual(schema.validate({"path": "x"}, declared), [])
+
 
 class RegistryTest(unittest.TestCase):
     def setUp(self):
@@ -185,6 +199,90 @@ class SnapshotTest(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         with self.assertRaises(ValueError):
             snapshot.resolve(root, "../../etc/passwd")
+
+    def test_secret_names_are_matched_regardless_of_case(self):
+        repo = Path(tempfile.mkdtemp())
+        for rel in (".ENV", ".ENV.example", "keys/Server.PEM", "id_RSA", "app.py"):
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("x")
+        files = snapshot.build(repo, Path(tempfile.mkdtemp()))
+        self.assertIn("app.py", files)
+        self.assertIn(".ENV.example", files)
+        self.assertFalse(
+            any(name in files for name in (".ENV", "keys/Server.PEM", "id_RSA"))
+        )
+        dotted = Path(tempfile.mkdtemp())
+        (dotted / ".env").mkdir()
+        (dotted / ".env" / "secret.txt").write_text("x")
+        (dotted / "app.py").write_text("x")
+        nested = snapshot.build(dotted, Path(tempfile.mkdtemp()))
+        self.assertEqual(nested, ["app.py"])
+
+    def test_attachments_with_the_same_name_are_both_kept(self):
+        repo = Path(tempfile.mkdtemp())
+        (repo / "app.py").write_text("x")
+        first = Path(tempfile.mkdtemp()) / "job.log"
+        second = Path(tempfile.mkdtemp()) / "job.log"
+        first.write_text("AAA")
+        second.write_text("BBB")
+        dest = Path(tempfile.mkdtemp())
+        files = snapshot.build(repo, dest, [first, second])
+        inputs = [name for name in files if name.startswith("_inputs/")]
+        self.assertEqual(len(inputs), 2)
+        bodies = {(dest / name).read_text() for name in inputs}
+        self.assertEqual(bodies, {"AAA", "BBB"})
+
+    def test_git_lists_non_ascii_names_without_quoting_them_away(self):
+        repo = Path(tempfile.mkdtemp())
+        git = shutil.which("git")
+        if git is None:
+            self.fail("git is not on PATH")
+        subprocess.run([git, "init", "-q", str(repo)], check=True)  # noqa: S603
+        (repo / "café.py").write_text("print(1)\n")
+        (repo / "plain.py").write_text("print(2)\n")
+        subprocess.run([git, "-C", str(repo), "add", "-A"], check=True)  # noqa: S603
+        files = snapshot.build(repo, Path(tempfile.mkdtemp()))
+        self.assertIn("café.py", files)
+        self.assertIn("plain.py", files)
+
+
+class ReportTest(unittest.TestCase):
+    def test_a_skip_is_reported_instead_of_failing_the_suite_silently(self):
+        payload = {
+            "ran": 2,
+            "results": [
+                {"test": "test_ok", "status": "ok", "message": ""},
+                {"test": "test_skip", "status": "skipped", "message": "platform"},
+            ],
+        }
+        report = _parse_tests(MARK + json.dumps(payload), 0, 0.1, "probe")
+        self.assertFalse(report.passed)
+        self.assertEqual(report.ok, ["test_ok"])
+        self.assertEqual(
+            [(item["test"], item["status"]) for item in report.failed],
+            [("test_skip", "skipped")],
+        )
+
+
+class MountTest(unittest.TestCase):
+    def test_nested_files_and_file_mounts_become_readable(self):
+        root = Path(tempfile.mkdtemp())
+        nested = root / "src" / "pkg"
+        nested.mkdir(parents=True)
+        target = nested / "mod.py"
+        target.write_text("x")
+        lone = root / "runner.py"
+        lone.write_text("x")
+        for path in (root, root / "src", nested):
+            os.chmod(path, 0o700)
+        os.chmod(target, 0o600)
+        os.chmod(lone, 0o600)
+        _readable_by_sandbox(root)
+        _readable_by_sandbox(lone)
+        self.assertTrue(nested.stat().st_mode & 0o005 == 0o005)
+        self.assertTrue(target.stat().st_mode & 0o004)
+        self.assertTrue(lone.stat().st_mode & 0o004)
 
 
 class GapTest(unittest.TestCase):

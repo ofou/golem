@@ -20,6 +20,13 @@ import time
 from pathlib import Path
 
 NAME = re.compile(r"^[a-z][a-z0-9_]{2,40}$")
+EXPORT_FORMAT = """The registry export is /registry/tools.json, /registry/usage.json, /registry/gaps.json (access "registry-read" only):
+    tools.json  [{"name", "version", "active": bool, "manifest": {"name", "version", "access", "description",
+                 "input_schema", "output_schema", "gap", "created_by"}, "receipt": {"passed": bool,
+                 "tests": {"ran", "ok"}, "blind_tests": {"ran", "ok"}, "stub_failed": float, "created_at"}}]
+                 A tool's gap {"task_quote", "why_needed", ...} is inside its manifest, never at the top level.
+    usage.json  [{"ts", "run", "tool": "name@version", "ok": bool, "seconds"}]   one row per call of an installed tool
+    gaps.json   [{"ts", "run", "tool": "name@version", "gap": {"task_quote", "why_needed", ...}}]"""
 BUNDLE_FILES = (
     "manifest.json",
     "tool.py",

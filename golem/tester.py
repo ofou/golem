@@ -13,6 +13,8 @@ import re
 
 from openrouter_agent import call_model, max_cost, step_count_is
 
+from golem.registry import EXPORT_FORMAT
+
 INSTRUCTIONS = """You write acceptance tests for a Python tool you cannot see.
 
 You get the tool's name, description, input and output JSON schemas, its access level, and the task that caused it.
@@ -23,6 +25,7 @@ Write ONE Python file, test_blind.py, using only the standard library and unitte
 - At least 4 tests. Each asserts concrete expected values taken from real files or from inputs you construct, not just types.
 - Cover the main case, an edge case, and invalid or missing input as the schemas describe it.
 - Inside the test sandbox, repository file `X` is at `/repo/X` (repository-read tools only), attachment `_inputs/Y` is at `/inputs/Y`, the registry export is at `/registry/` (registry-read tools only). No network, no writes outside /tmp.
+- For a registry-read tool, the brief carries registry_export_format. Fixtures you build must follow it exactly.
 - Never test private helpers. Never import anything except unittest, tool, and other standard-library modules.
 
 Reply with only the file, in one ```python code block."""
@@ -172,6 +175,8 @@ async def write_blind_tests(
         "output_schema": manifest["output_schema"],
         "task": task[:4000],
     }
+    if manifest["access"] == "registry-read":
+        brief["registry_export_format"] = EXPORT_FORMAT
     request = {
         "model": model,
         "instructions": INSTRUCTIONS,
@@ -193,6 +198,29 @@ async def write_blind_tests(
             "the blind test writer did not return a unittest file that imports run from tool"
         )
     return code + "\n"
+
+
+def calls_in(suite: str, test_name: str, limit: int = 3) -> list[str]:
+    """The run(...) calls one test makes, as source: the inputs a failing blind test used,
+    without the values it expects. Told only "test_blind_04: AssertionError", a builder
+    cannot tell that the test called run({"only": []}), and spent three attempts guessing."""
+    try:
+        tree = ast.parse(suite)
+    except SyntaxError:
+        return []
+    calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == test_name:
+            for sub in ast.walk(node):
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "run"
+                ):
+                    text = ast.unparse(sub)[:300]
+                    if text not in calls:
+                        calls.append(text)
+    return calls[:limit]
 
 
 def anonymize(suite: str) -> tuple[str, dict]:

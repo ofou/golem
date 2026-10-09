@@ -79,7 +79,7 @@ def ask(
     started = time.monotonic()
     try:
         response = _post(api_key, body, timeout)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return Reply(
             error=f"{type(exc).__name__}: {str(exc)[:160]}",
             seconds=round(time.monotonic() - started, 3),

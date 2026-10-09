@@ -46,8 +46,20 @@ def check_schema(schema: object, where: str = "schema", depth: int = 0) -> list[
     kinds = kind if isinstance(kind, list) else [kind]
     if kind is None or any(item not in TYPES for item in kinds):
         problems.append(f"{where}: type must be one of {sorted(TYPES)}")
-    for name, sub in (schema.get("properties") or {}).items():
+    props = schema.get("properties")
+    if props is None:
+        props = {}
+    elif not isinstance(props, dict):
+        problems.append(f"{where}: properties must be an object")
+        props = {}
+    for name, sub in props.items():
         problems += check_schema(sub, f"{where}.{name}", depth + 1)
+    required = schema.get("required")
+    if required is not None and (
+        not isinstance(required, list)
+        or any(not isinstance(item, str) for item in required)
+    ):
+        problems.append(f"{where}: required must be a list of strings")
     if isinstance(schema.get("items"), dict):
         problems += check_schema(schema["items"], f"{where}[]", depth + 1)
     extra = schema.get("additionalProperties")
@@ -71,10 +83,14 @@ def validate(value: object, schema: dict, where: str = "$") -> list[str]:
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{where}: {value!r} is not one of {schema['enum']}")
     if isinstance(value, dict):
-        props = schema.get("properties") or {}
-        for name in schema.get("required") or []:
-            if name not in value:
-                errors.append(f"{where}: missing required {name!r}")
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            props = {}
+        required = schema.get("required")
+        if isinstance(required, list):
+            for name in required:
+                if isinstance(name, str) and name not in value:
+                    errors.append(f"{where}: missing required {name!r}")
         extra = schema.get("additionalProperties")
         for name, item in value.items():
             if name in props:

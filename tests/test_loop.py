@@ -208,6 +208,16 @@ class LoopTest(unittest.TestCase):
             made["your_test_failures"],
         )
 
+    def test_arguments_the_input_schema_forbids_are_refused_in_testing(self):
+        strict = dict(args()["input_schema"], additionalProperties=False)
+        refuses = OWN_TESTS + (
+            "    def test_unknown_argument(self):\n"
+            "        with self.assertRaises(ValueError):\n"
+            '            run({"log_file": "build.log", "extra": 1})\n'
+        )
+        made = self.make(input_schema=strict, tests=refuses)
+        self.assertEqual(made["status"], "passed", made)
+
     def test_failing_implementation_is_not_installable(self):
         made = self.make(
             code=CODE.replace('"failures": len(names)', '"failures": len(names) + 1')
@@ -270,7 +280,11 @@ class LoopTest(unittest.TestCase):
         )
         self.assertEqual(made["status"], "failed")
         self.assertIn(
-            {"test": "test_blind_01", "error": "AssertionError"},
+            {
+                "test": "test_blind_01",
+                "error": "AssertionError",
+                "calls": ["run({'log_file': 'build.log'})"],
+            },
             made["blind_test_failures"],
         )
         self.assertNotIn("3 != 2", json.dumps(made["blind_test_failures"]))
@@ -339,3 +353,27 @@ class LoopTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlindBriefTest(unittest.TestCase):
+    def test_a_registry_read_tool_brief_carries_the_export_format(self):
+        sent = {}
+
+        class Result:
+            async def get_text(self):
+                return "```python\nimport unittest\nfrom tool import run\n```"
+
+        def fake_call(_client, request):
+            sent.update(request)
+            return Result()
+
+        manifest = dict(args(access="registry-read"), name="registry_report")
+        with mock.patch.object(tester, "call_model", new=fake_call):
+            asyncio.run(
+                tester.write_blind_tests(None, "m", manifest, TASK, [], 0.01, None)
+            )
+        self.assertIn("is inside its manifest", sent["input"])
+        sent.clear()
+        with mock.patch.object(tester, "call_model", new=fake_call):
+            asyncio.run(tester.write_blind_tests(None, "m", args(), TASK, [], 0.01, None))
+        self.assertNotIn("registry_export_format", sent["input"])

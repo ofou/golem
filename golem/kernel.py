@@ -387,7 +387,7 @@ async def _make_tool(run: Run, args: dict) -> dict:
                     reasoning=run.licence.data["models"].get("tester_reasoning"),
                 )
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append(f"{type(exc).__name__}: {str(exc)[:300]}")
                 run.say(
                     "blind",
@@ -532,11 +532,16 @@ async def _make_tool(run: Run, args: dict) -> dict:
         "reasons": reasons,
         "your_test_failures": own.failed[:8],
         "blind_test_failures": [
-            {"test": item["test"], "error": item["message"].split(":", 1)[0]}
+            {
+                "test": item["test"],
+                "error": item["message"].split(":", 1)[0],
+                "calls": tester.calls_in(run.blind_suites[suite_key], item["test"]),
+            }
             for item in blind_report.failed[:8]
         ],
         "next": "Fix the code (or your tests) and call make_tool again with the same name. "
-        "Blind test messages are withheld: read the inputs to see what is expected.",
+        "Blind test messages are withheld; each failure lists the run(...) calls it makes, not what it expects. "
+        "Decide from the task, the inputs, and your input_schema what those calls should return, or dispute with evidence.",
     }
 
 
@@ -582,7 +587,7 @@ async def _settle_disputes(
                 plugins=run.licence.data["models"].get("tester_plugins"),
                 reasoning=run.licence.data["models"].get("tester_reasoning"),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             review = {
                 "verdict": "keep",
                 "why": f"review failed ({type(exc).__name__}), so the test stays",
