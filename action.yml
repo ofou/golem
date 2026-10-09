@@ -1,0 +1,186 @@
+name: Run Golem
+description: An agent that builds, sandboxes, tests and keeps its own tools for your repository, inside a frozen licence.
+author: ofou
+branding:
+  icon: cpu
+  color: purple
+
+inputs:
+  command:
+    description: "`run` does one task and needs the OpenRouter key. `verify` re-runs every installed tool's own and blind tests in the sandbox and needs no key."
+    default: run
+  task:
+    description: The task, for `run`. Pass it through `with:`, never by pasting untrusted text into a script.
+    default: ""
+  openrouter-api-key:
+    description: OpenRouter API key for `run`, from a secret. Give the key its own credit limit on openrouter.ai.
+    default: ""
+  attach:
+    description: Files to give the task, one path per line (relative to the workspace). Tools read them under /inputs.
+    default: ""
+  path:
+    description: The checkout Golem works in, relative to the workspace.
+    default: "."
+  licence:
+    description: A licence file to use instead of Golem's own. Empty means Golem's own licence, byte for byte; a licence in the checkout's .golem/ is never picked up on its own.
+    default: ""
+  registry:
+    description: "Where installed tools live between runs. `read-write` restores the registry from the Actions cache and saves a new snapshot after `run`. `read-only` restores it and keeps nothing new. `off` uses only what is in the checkout."
+    default: read-write
+  artifact:
+    description: Name prefix of the artifact with this run's registry, events and answer (`run` only). Empty uploads nothing. Artifacts of a public repository can be downloaded by anyone signed in to GitHub.
+    default: golem
+  github-token:
+    description: Token for listing registry snapshots before a save (needs actions read). Without it, a cache miss can save a registry that hides an older, fuller one.
+    default: ${{ github.token }}
+
+outputs:
+  exit-code:
+    description: Exit code of `golem run` or `golem verify`.
+    value: ${{ steps.run.outputs.exit-code || steps.verify.outputs.exit-code }}
+  run-id:
+    description: Golem's id for this run (its folder under .golem/runs).
+    value: ${{ steps.collect.outputs.run-id }}
+  answer-file:
+    description: Path of the final answer (Markdown).
+    value: ${{ steps.collect.outputs.answer-file }}
+  installed:
+    description: Tools this run installed, as space-separated name@version.
+    value: ${{ steps.collect.outputs.installed }}
+  spent:
+    description: What this run spent on OpenRouter, in US dollars (for example $0.0123).
+    value: ${{ steps.collect.outputs.spent }}
+  registry:
+    description: "What happened to the registry: saved, unchanged, not-saved, guarded, empty, read-only or off."
+    value: ${{ steps.report.outputs.registry }}
+  artifact-id:
+    description: Id of the uploaded artifact.
+    value: ${{ steps.upload.outputs.artifact-id }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: bash
+      env:
+        GOLEM_COMMAND: ${{ inputs.command }}
+        GOLEM_TASK: ${{ inputs.task }}
+        GOLEM_ATTACH: ${{ inputs.attach }}
+        GOLEM_PATH: ${{ inputs.path }}
+        GOLEM_LICENCE: ${{ inputs.licence }}
+        GOLEM_REGISTRY: ${{ inputs.registry }}
+        GOLEM_HAS_KEY: ${{ inputs.openrouter-api-key != '' }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" setup
+
+    - id: python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: "3.13"
+        update-environment: false
+
+    - id: install
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+        GOLEM_PYTHON: ${{ steps.python.outputs.python-path }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" install
+
+    - id: restore
+      if: inputs.registry != 'off'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ runner.temp }}/golem-registry
+        key: golem-registry-v1-${{ github.run_id }}-${{ github.run_attempt }}-restore
+        restore-keys: golem-registry-v1-
+
+    - id: place
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+        GOLEM_REGISTRY: ${{ inputs.registry }}
+        GOLEM_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" place
+
+    - id: run
+      if: inputs.command == 'run'
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+        GOLEM_TASK: ${{ inputs.task }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" run
+
+    - id: verify
+      if: inputs.command == 'verify'
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" verify
+
+    - id: collect
+      if: inputs.command == 'run'
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+        GOLEM_TASK: ${{ inputs.task }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" collect
+
+    - id: stage
+      if: inputs.command == 'run' && inputs.registry == 'read-write'
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+        GOLEM_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        GOLEM_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" stage
+
+    - id: save
+      if: steps.stage.outputs.save == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ runner.temp }}/golem-registry
+        key: ${{ steps.stage.outputs.key }}
+
+    - id: saved
+      if: steps.stage.outputs.save == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ runner.temp }}/golem-registry
+        key: ${{ steps.stage.outputs.key }}
+        lookup-only: true
+
+    - id: report
+      if: inputs.command == 'run'
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+        GOLEM_REGISTRY: ${{ inputs.registry }}
+        GOLEM_SAVE: ${{ steps.stage.outputs.save }}
+        GOLEM_SAVED_HIT: ${{ steps.saved.outputs.cache-hit }}
+        GOLEM_KEY: ${{ steps.stage.outputs.key }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" report
+
+    - id: package
+      if: inputs.command == 'run' && inputs.artifact != ''
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+        GOLEM_ARTIFACT: ${{ inputs.artifact }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" package
+
+    - id: upload
+      if: steps.package.outputs.dir != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: ${{ steps.package.outputs.name }}
+        path: ${{ steps.package.outputs.dir }}
+        include-hidden-files: true
+        if-no-files-found: warn
+
+    - id: finish
+      shell: bash
+      env:
+        GOLEM_STATE: ${{ steps.setup.outputs.state }}
+      run: bash "$GITHUB_ACTION_PATH/action/steps.sh" finish

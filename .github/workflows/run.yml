@@ -1,0 +1,213 @@
+name: golem
+
+on:
+  workflow_call:
+    inputs:
+      task:
+        description: The task, for workflow_dispatch and other events. A /golem comment brings its own.
+        type: string
+        default: ""
+      licence:
+        description: Path of a licence file in the calling repository, read at the commit the workflow runs at (never from a pull request). Empty means Golem's own licence.
+        type: string
+        default: ""
+      allowed-users:
+        description: Comma-separated logins. When set, only these people can start Golem, and they still need write access.
+        type: string
+        default: ""
+      registry:
+        description: "read-write (keep installed tools in the Actions cache), read-only, or off."
+        type: string
+        default: read-write
+    secrets:
+      OPENROUTER_API_KEY:
+        description: OpenRouter API key with its own credit limit.
+        required: true
+    outputs:
+      run-id:
+        description: Golem's id for the run.
+        value: ${{ jobs.run.outputs.run-id }}
+      installed:
+        description: Tools the run installed, as space-separated name@version.
+        value: ${{ jobs.run.outputs.installed }}
+      spent:
+        description: What the run spent on OpenRouter, in US dollars.
+        value: ${{ jobs.run.outputs.spent }}
+      registry:
+        description: What happened to the registry (saved, unchanged, not-saved, guarded, empty, read-only, off).
+        value: ${{ jobs.run.outputs.registry }}
+      artifact-id:
+        description: Id of the run's artifact (registry, events, answer).
+        value: ${{ jobs.run.outputs.artifact-id }}
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+      task: ${{ steps.gate.outputs.task }}
+      sha: ${{ steps.gate.outputs.sha }}
+      trusted: ${{ steps.gate.outputs.trusted }}
+      issue: ${{ steps.gate.outputs.issue }}
+      licence: ${{ steps.gate.outputs.licence }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .golem-action
+          sparse-checkout: action
+          persist-credentials: false
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TASK: ${{ inputs.task }}
+          INPUT_LICENCE: ${{ inputs.licence }}
+          ALLOWED_USERS: ${{ inputs.allowed-users }}
+          EVENT_ACTION: ${{ github.event.action }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_USER: ${{ github.event.comment.user.login }}
+          COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          IS_PULL_REQUEST: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+        run: bash .golem-action/action/gate.sh
+
+  run:
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    cache-mode: write
+    concurrency:
+      group: golem-registry
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      exit-code: ${{ steps.golem.outputs.exit-code }}
+      run-id: ${{ steps.golem.outputs.run-id }}
+      installed: ${{ steps.golem.outputs.installed }}
+      spent: ${{ steps.golem.outputs.spent }}
+      registry: ${{ steps.golem.outputs.registry }}
+      artifact-id: ${{ steps.golem.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          path: repo
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .golem-action
+          persist-credentials: false
+      - name: Leave out a pull request's own Golem state
+        if: github.event.issue.pull_request
+        run: rm -rf repo/.golem
+      - id: licence
+        if: needs.gate.outputs.licence != ''
+        env:
+          LICENCE: ${{ needs.gate.outputs.licence }}
+        run: |
+          printf '%s' "$LICENCE" | base64 -d >"$RUNNER_TEMP/golem-licence.json"
+          echo "path=$RUNNER_TEMP/golem-licence.json" >>"$GITHUB_OUTPUT"
+      - id: golem
+        uses: ./.golem-action
+        with:
+          command: run
+          task: ${{ needs.gate.outputs.task }}
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          path: repo
+          licence: ${{ steps.licence.outputs.path }}
+          registry: ${{ (inputs.registry == 'off' || needs.gate.outputs.trusted == 'true') && inputs.registry || 'read-only' }}
+
+  verify:
+    needs: [gate, run]
+    if: ${{ !cancelled() && needs.run.outputs.artifact-id != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    cache-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          path: repo
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .golem-action
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ needs.run.outputs.artifact-id }}
+          path: ${{ runner.temp }}/golem-run
+      - name: Put the run's registry in place
+        run: |
+          rm -rf repo/.golem
+          mkdir -p repo/.golem
+          if [ -d "$RUNNER_TEMP/golem-run/registry" ]; then cp -R "$RUNNER_TEMP/golem-run/registry" repo/.golem/registry; fi
+          for journal in usage gaps; do
+            if [ -f "$RUNNER_TEMP/golem-run/$journal.jsonl" ]; then cp "$RUNNER_TEMP/golem-run/$journal.jsonl" repo/.golem/; fi
+          done
+      - id: licence
+        if: needs.gate.outputs.licence != ''
+        env:
+          LICENCE: ${{ needs.gate.outputs.licence }}
+        run: |
+          printf '%s' "$LICENCE" | base64 -d >"$RUNNER_TEMP/golem-licence.json"
+          echo "path=$RUNNER_TEMP/golem-licence.json" >>"$GITHUB_OUTPUT"
+      - uses: ./.golem-action
+        with:
+          command: verify
+          path: repo
+          licence: ${{ steps.licence.outputs.path }}
+          registry: "off"
+
+  reply:
+    needs: [gate, run, verify]
+    if: ${{ always() && needs.gate.outputs.allowed == 'true' && needs.gate.outputs.issue != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .golem-action
+          sparse-checkout: action
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        if: needs.run.outputs.artifact-id != ''
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.run.outputs.artifact-id }}
+          path: ${{ runner.temp }}/golem-run
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.gate.outputs.issue }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          RUN_RESULT: ${{ needs.run.result }}
+          EXIT_CODE: ${{ needs.run.outputs.exit-code }}
+          INSTALLED: ${{ needs.run.outputs.installed }}
+          SPENT: ${{ needs.run.outputs.spent }}
+          REGISTRY_STATUS: ${{ needs.run.outputs.registry }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          ANSWER_DIR: ${{ runner.temp }}/golem-run
+        run: bash .golem-action/action/reply.sh

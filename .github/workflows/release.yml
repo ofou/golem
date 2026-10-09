@@ -1,0 +1,26 @@
+name: release
+on:
+  release:
+    types: [published]
+permissions: {}
+jobs:
+  major-tag:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          [[ "$TAG" =~ ^(v[0-9]+)\.[0-9]+\.[0-9]+$ ]] || { echo "$TAG is not vX.Y.Z; no major tag moved"; exit 0; }
+          major="${BASH_REMATCH[1]}"
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$major" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$major" -f sha="$sha" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$major" -f sha="$sha" >/dev/null
+          fi
+          echo "$major -> $sha ($TAG)" | tee -a "$GITHUB_STEP_SUMMARY"

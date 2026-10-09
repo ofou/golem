@@ -35,3 +35,39 @@ jobs:
       - name: Pytest
         if: ${{ !cancelled() }}
         run: uv run --no-sync pytest --cov=golem --cov-report=term-missing
+
+  action:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        with:
+          python-version: "3.13"
+          enable-cache: false
+      - name: A registry with one installed tool (offline fixture)
+        run: |
+          uv sync --no-editable
+          uv run --no-sync python -m tests.fixture_registry "$RUNNER_TEMP/fixture"
+      - id: verify
+        uses: ./
+        with:
+          command: verify
+          path: ${{ runner.temp }}/fixture/repo
+          attach: ${{ runner.temp }}/fixture/build.log
+          registry: "off"
+      - id: keyless
+        uses: ./
+        continue-on-error: true
+        with:
+          task: anything
+          registry: "off"
+      - name: verify passed, and run refused without a key
+        env:
+          VERIFY_CODE: ${{ steps.verify.outputs.exit-code }}
+          KEYLESS: ${{ steps.keyless.outcome }}
+        run: |
+          test "$VERIFY_CODE" = 0
+          test "$KEYLESS" = failure

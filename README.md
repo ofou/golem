@@ -20,7 +20,8 @@ Golem needs Docker running: it never runs generated code outside its sandbox.
 
 - **From GitHub, with uv or pip** (Python 3.13 or later): `uv tool install git+https://github.com/ofou/golem`, then `golem login`. The package carries the default licence, byte for byte.
 - **As a Docker image**: `docker build -t golem:local https://github.com/ofou/golem.git#main`. From a clone, `scripts/golem-docker login`, then `scripts/golem-docker PATH run "TASK"`. The wrapper mounts the repository and the host's Docker socket, so the sandbox containers run beside Golem's, not inside it.
-- **On GitHub Actions**: add the repository secret `OPENROUTER_API_KEY` (a key with its own credit limit), then `gh workflow run golem.yml -f target=OWNER/REPO -f ref=SHA -f task="..."`. One job runs the task with the key. A second job holds no secret and re-runs every installed tool's tests in the sandbox, so the public log shows the tools pass on a machine that never had the key. Only people with write access can start it.
+- **In your repository, on GitHub Actions**: see [Install in a repository](#install-in-a-repository). Two steps, then `/golem <task>` on an issue or pull request.
+- **On another public repository, from this one**: add the repository secret `OPENROUTER_API_KEY` (a key with its own credit limit), then `gh workflow run golem.yml -f target=OWNER/REPO -f ref=SHA -f task="..."`. One job runs the task with the key. A second job holds no secret and re-runs every installed tool's tests in the sandbox, so the public log shows the tools pass on a machine that never had the key. Only people with write access can start it.
 
 **Login.** `golem login` uses OpenRouter's OAuth PKCE flow. It opens `openrouter.ai/auth`, you approve, OpenRouter redirects to a one-time `localhost` callback, and Golem exchanges the code for a key on your own account. The key goes to `~/.config/golem/openrouter.key` with mode 0600 and is never printed. `--headless` shows a code to paste instead, which is what `scripts/golem-docker login` uses. `OPENROUTER_API_KEY`, when set, wins. OpenRouter's flow has no spending-limit option, so set a limit on the key at openrouter.ai; Golem's per-task cap applies either way.
 
@@ -40,6 +41,66 @@ flowchart TD
   jev[["Jev may send a proposal back once.<br/>It never approves one."]] -.-> make
   licence[["authority.json: same sha256 before and after"]] -.-> rules
 ```
+
+## Install in a repository
+
+Any GitHub repository, public or private, can run Golem through this repository's reusable workflow, on GitHub-hosted Ubuntu runners, which have Docker.
+
+1. Add the repository secret `OPENROUTER_API_KEY`: a key with its own credit limit. `gh secret set OPENROUTER_API_KEY`
+2. Copy [`examples/golem.yml`](examples/golem.yml) to `.github/workflows/golem.yml` on the default branch:
+
+```bash
+mkdir -p .github/workflows && curl -fsSL https://raw.githubusercontent.com/ofou/golem/v1/examples/golem.yml -o .github/workflows/golem.yml
+```
+
+Then start it from the Actions tab, with `gh workflow run golem.yml -f task="..."`, or by commenting `/golem <task>` on an issue or pull request. A comment gets its answer as a reply; every run puts it in the run's summary.
+
+[`run.yml`](.github/workflows/run.yml) has four jobs:
+
+| Job | Holds | Permissions | Does |
+| --- | --- | --- | --- |
+| `gate` | no secret | `contents: read`, `issues: write` | Decides who may spend the key, takes the task from the comment, pins a pull request's head commit, reacts with 👀 |
+| `run` | `OPENROUTER_API_KEY` | `contents: read`, `actions: read` | Restores the registry, runs the task, saves a new snapshot, uploads the run as an artifact |
+| `verify` | no secret | `contents: read` | Re-runs every installed tool's own and blind tests in the sandbox, on a machine that never had the key |
+| `reply` | no secret | `contents: read`, `issues: write` | Answers the comment |
+
+The job with the key cannot push, comment, or open a pull request. Golem never applies a patch; a patch proposal arrives as text in the answer. Golem's code is checked out at the commit the caller pinned (`job.workflow_sha`), and every action is pinned to a full commit SHA.
+
+**Who can start it.** `workflow_dispatch` needs write access, which GitHub enforces. A comment starts Golem only when its author has write or admin permission on the repository, read from the API by a job that holds no secret; anyone else's `/golem` is ignored. Edited comments and bots never start it, and the `allowed-users` input narrows the set further. `author_association` is not used: `COLLABORATOR` and `MEMBER` include people with read access.
+
+**Pull requests.** On a pull request comment, Golem reads the head commit, pinned when the gate runs and named in the reply. The pull request's own `.golem/` is removed, and the licence never comes from it. Golem never runs the repository's code; tools read a read-only snapshot in the sandbox. A fork's code can still steer the model up to the licence's spend cap, so tools built while reading it are not saved.
+
+**The registry** lives in the repository's Actions cache. A run restores the newest snapshot (`golem-registry-v1-*`) and saves a new one when the registry changed, and runs that could change it go one at a time, queued, none dropped. A snapshot nobody restores for 7 days is evicted, and Golem starts empty again; `gh cache list --key golem-registry-v1-` shows them, and plans with a payment method can raise cache retention. Anyone who can open a pull request can read the base branch's caches, and a tool's manifest quotes the task, so on a public repository treat tasks as public. A comment is a low-trust trigger with a read-only cache unless the job asks for `cache-mode: write`, which the `run` job does; a calling job that sets `cache-mode: read` stops the workflow from starting.
+
+**Licence.** Golem's own [`authority.json`](authority.json) by default, byte for byte. To use another, commit it and pass `with: licence: path/to/authority.json`; it is read at the commit the workflow runs at, never from a pull request.
+
+**Public repositories.** Logs, summaries and the run's artifact (registry, events, answer, candidates) are public; anyone signed in can download the artifact. The key is never printed, and the artifact step leaves out any file that contains it.
+
+**Pinning.** `@v1` follows the newest 1.x release. For a fixed version, use a full commit SHA with the tag as a comment, `run.yml@<sha> # v1.0.0`, and let Dependabot move it.
+
+**In your own workflow**, the composite action does the same as one step. It needs a Linux runner with Docker (not a `container:` job); the job's `permissions:` are what it gets.
+
+```yaml
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: golem
+        uses: ofou/golem@v1
+        with:
+          task: ${{ inputs.task }}
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          attach: build.log
+```
+
+Inputs: `command` (`run` or `verify`), `task`, `openrouter-api-key`, `attach` (one path per line), `path`, `licence`, `registry` (`read-write`, `read-only`, `off`), `artifact`, `github-token`. Outputs: `exit-code`, `run-id`, `answer-file`, `installed`, `spent`, `registry`, `artifact-id`. The action has no gate of its own: on triggers anyone can start (`issue_comment`, `pull_request_target`), use the reusable workflow.
+
+**Limits.** The reusable workflow runs on GitHub-hosted runners only: a workflow from another account cannot use your self-hosted runners. The action runs on self-hosted Linux runners with Docker. GitHub Enterprise Server is not supported. Organizations that restrict actions must allow `ofou/golem@*` and `ofou/golem/.github/workflows/run.yml@*`, and GitHub's own actions.
+
+**Releasing** (maintainers). Publish a GitHub release `vX.Y.Z`; [`release.yml`](.github/workflows/release.yml) moves the tag `vX` to it. To list it on the Marketplace, tick "Publish this Action to the GitHub Marketplace" on that release. The listing takes `action.yml`'s `name`, "Run Golem"; "Golem" is taken by a GitHub user's login.
 
 ## How a tool gets made
 
@@ -127,9 +188,9 @@ Not yet shown: a task that chains two previously built tools, an agent-built reg
 
 Simulated: `tests/test_loop.py` replaces the two model calls with fixture arguments and fixture blind tests to check the kernel loop. Those fixtures never enter a registry.
 
-Written but not yet run for real: `golem login` against a real OpenRouter approval (its PKCE, callback, state check, storage and exchange are unit-tested; OpenRouter accepts its URL and rejects a bad code), and both workflows in `.github/workflows`, which have not run on GitHub yet. The `verify` job was replayed locally on aiohttp: 4/4 own and 7/7 blind tests passed with no key in the environment.
+Written but not yet run for real: `golem login` against a real OpenRouter approval (its PKCE, callback, state check, storage and exchange are unit-tested; OpenRouter accepts its URL and rejects a bad code), and `golem.yml`, which has not run on GitHub yet. The `verify` job was replayed locally on aiohttp: 4/4 own and 7/7 blind tests passed with no key in the environment. The action's steps (`action/steps.sh`) and the reusable workflow's gate and reply were run in a Linux container against real sandbox containers, with a stub `gh` for the API; `run.yml` itself has not run on GitHub yet.
 
-Missing: the MCP-server shape, a GitHub App, pull requests, a `/golem` trigger, and deployment. `ACTIONS.md` describes a different Actions design that uses only `GITHUB_TOKEN`; it is not what `golem.yml` does.
+Missing: the MCP-server shape, a GitHub App, opening pull requests, and deployment. `ACTIONS.md` describes a different Actions design that uses only `GITHUB_TOKEN`; it is not what `golem.yml` does.
 
 Fragile: Docker runs on the same machine as the process that holds the OpenRouter key. The container gets no environment, no network, no capabilities, and only read-only mounts of the bundle, the snapshot, and the attachments, but a container escape would reach the host. A remote sandbox would close that.
 

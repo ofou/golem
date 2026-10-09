@@ -1,0 +1,26 @@
+name: golem
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: The task
+        required: true
+        type: string
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  golem:
+    if: github.event_name != 'issue_comment' || startsWith(github.event.comment.body, '/golem')
+    uses: ofou/golem/.github/workflows/run.yml@v1
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    with:
+      task: ${{ inputs.task }}
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

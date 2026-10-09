@@ -91,11 +91,15 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     repo = Path(args.repo).resolve()
-    licence_path = (
-        Path(args.licence) if args.licence else (repo / ".golem" / "authority.json")
-    )
-    if not licence_path.is_file():
-        licence_path = DEFAULT_LICENCE
+    if args.licence:
+        licence_path = Path(args.licence)
+        if not licence_path.is_file():
+            print(f"licence not found: {licence_path}", file=sys.stderr)
+            return 2
+    else:
+        licence_path = repo / ".golem" / "authority.json"
+        if not licence_path.is_file():
+            licence_path = DEFAULT_LICENCE
     registry = Registry(repo / ".golem")
 
     if args.command == "licence":
@@ -199,8 +203,9 @@ def _verify(repo: Path, registry: Registry, lic, attachments: list[Path]) -> int
     try:
         snap = work / "snapshot"
         snapshot.build(repo, snap, attachments)
-        sandbox = Sandbox(lic, snap, registry.export(work / "registry"))
+        export = registry.export(work / "registry")
         for name, version in sorted(active.items()):
+            sandbox = Sandbox(lic, snap, export)
             bundle, manifest, receipt = (
                 registry.bundle(name, version),
                 registry.manifest(name, version),
