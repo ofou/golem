@@ -78,6 +78,8 @@ def main() -> None:
         stream=sys.stderr, verbosity=2, resultclass=Recording
     ).run(suite)
     sys.stderr.flush()
+    if not isinstance(result, Recording):
+        raise TypeError(f"expected Recording result, got {type(result).__name__}")
     print(MARK + json.dumps({"ran": result.testsRun, "results": result.records}))
 
 

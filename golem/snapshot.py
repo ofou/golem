@@ -71,9 +71,12 @@ def build(repo: Path, dest: Path, attachments: list[Path] | None = None) -> list
 
 def _candidate_files(repo: Path) -> list[str]:
     try:
-        out = subprocess.run(
+        git = shutil.which("git")
+        if git is None:
+            raise OSError("git is not on PATH")
+        out = subprocess.run(  # noqa: S603 - fixed argv, path from shutil.which
             [
-                "git",
+                git,
                 "-C",
                 str(repo),
                 "ls-files",

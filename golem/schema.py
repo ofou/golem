@@ -65,7 +65,8 @@ def validate(value: object, schema: dict, where: str = "$") -> list[str]:
     errors: list[str] = []
     kind = schema.get("type")
     kinds = kind if isinstance(kind, list) else [kind]
-    if kind is not None and not any(_is_type(value, item) for item in kinds):
+    type_names = [item for item in kinds if isinstance(item, str)]
+    if kind is not None and not any(_is_type(value, item) for item in type_names):
         return [f"{where}: expected {kind}, got {type(value).__name__}"]
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{where}: {value!r} is not one of {schema['enum']}")

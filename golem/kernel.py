@@ -393,7 +393,7 @@ async def _make_tool(run: Run, args: dict) -> dict:
                     plugins=run.licence.data["models"].get("tester_plugins"),
                 )
                 break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - any writer failure is a retry, not a crash
                 errors.append(f"{type(exc).__name__}: {str(exc)[:300]}")
                 run.say(
                     "blind",
@@ -445,7 +445,11 @@ async def _make_tool(run: Run, args: dict) -> dict:
         # hashed or installed. What runs uses opaque test names (see tester.anonymize).
         (folder / "blind_tests_as_written.txt").write_text(blind, encoding="utf-8")
         blind, renamed = tester.anonymize(blind)
-        run.say("blind", f"{len(renamed)} blind tests, renamed test_blind_01..{len(renamed):02d} before the builder sees any result", renamed=renamed)
+        run.say(
+            "blind",
+            f"{len(renamed)} blind tests, renamed test_blind_01..{len(renamed):02d} before the builder sees any result",
+            renamed=renamed,
+        )
         run.blind_suites[suite_key] = blind
     await _settle_disputes(run, manifest, suite_key, args.get("disputes") or [])
     (folder / "test_blind.py").write_text(run.blind_suites[suite_key], encoding="utf-8")
@@ -589,7 +593,7 @@ async def _settle_disputes(
                 stop=[lambda _options: run.next_step_may_overrun()],
                 plugins=run.licence.data["models"].get("tester_plugins"),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - review failure keeps the test
             review = {
                 "verdict": "keep",
                 "why": f"review failed ({type(exc).__name__}), so the test stays",

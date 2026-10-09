@@ -3,6 +3,7 @@
 This file is mounted read-only at /golem/runner.py. It is kernel code, not generated code.
 """
 
+import importlib
 import json
 import sys
 
@@ -13,8 +14,7 @@ def main() -> None:
     sys.path.insert(0, "/tool")
     try:
         args = json.loads(sys.stdin.read() or "{}")
-        import tool
-
+        tool = importlib.import_module("tool")
         result = tool.run(args)
         print(
             MARK
@@ -22,7 +22,7 @@ def main() -> None:
                 {"ok": True, "result": result}, ensure_ascii=False, default=str
             )
         )
-    except BaseException as exc:  # report every failure as data
+    except BaseException as exc:  # noqa: BLE001 - report every failure as data
         print(
             MARK
             + json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:2000]})

@@ -36,7 +36,9 @@ STUBS = {
     return {}
 """,
 }
-MAX_OUTPUT = 20_000
+MAX_OUTPUT = 20_000  # stderr kept for the log
+MAX_STDOUT = 2_000_000  # stdout kept for parsing; the 120 s timeout bounds it anyway
+MAX_RESULT = 20_000  # a tool result larger than this would flood the model's context
 
 
 @dataclass
@@ -76,12 +78,14 @@ class Sandbox:
 
     @staticmethod
     def available() -> bool:
-        if shutil.which("docker") is None:
+        docker = shutil.which("docker")
+        if docker is None:
             return False
-        probe = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+        probe = subprocess.run(  # noqa: S603 - fixed argv, path from shutil.which
+            [docker, "info", "--format", "{{.ServerVersion}}"],
             capture_output=True,
             text=True,
+            check=False,
         )
         return probe.returncode == 0
 
@@ -120,6 +124,14 @@ class Sandbox:
         )
         for line in reversed(out.splitlines()):
             if line.startswith(MARK):
+                size = len(line) - len(MARK)
+                if size > MAX_RESULT:
+                    return {
+                        "ok": False,
+                        "error": f"the result is {size} characters, over the {MAX_RESULT} limit: return less "
+                        "(filter by an argument, summarize, or page)",
+                        "seconds": round(time.monotonic() - started, 2),
+                    }
                 payload = json.loads(line[len(MARK) :])
                 payload["seconds"] = round(time.monotonic() - started, 2)
                 return payload
@@ -154,8 +166,11 @@ class Sandbox:
             mounts.append((Path(self.registry_export).resolve(), "/registry"))
         for host, _inside in mounts:
             _readable_by_sandbox(host, files=(host == mounts[0][0]))
+        docker = shutil.which("docker")
+        if docker is None:
+            raise SandboxError("docker is not on PATH")
         cmd = [
-            "docker",
+            docker,
             "run",
             "--rm",
             "--name",
@@ -164,7 +179,7 @@ class Sandbox:
             box.get("network", "none"),
             "--read-only",
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,size=64m",
+            "/tmp:rw,noexec,nosuid,size=64m",  # noqa: S108 - sandbox scratch, not a host secret path
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -200,17 +215,22 @@ class Sandbox:
         shown = f"docker run {shown} {box['image']} {' '.join(command)}"
         started = time.monotonic()
         try:
-            proc = subprocess.run(
+            proc = subprocess.run(  # noqa: S603 - argv built above from licence + fixed paths
                 cmd,
                 input=stdin,
                 capture_output=True,
                 text=True,
                 timeout=box["timeout_seconds"],
+                check=False,
             )
-            output = (proc.stdout + proc.stderr)[-MAX_OUTPUT:]
+            # A result line used to be cut by keeping only the tail of stdout+stderr, which a
+            # large result could push out entirely ("exited 0 without a result").
+            output = proc.stdout[-MAX_STDOUT:] + "\n" + proc.stderr[-MAX_OUTPUT:]
             return proc.returncode, output, round(time.monotonic() - started, 2), shown
         except subprocess.TimeoutExpired:
-            subprocess.run(["docker", "kill", name], capture_output=True)
+            subprocess.run(  # noqa: S603
+                [docker, "kill", name], capture_output=True, check=False
+            )
             return (
                 124,
                 f"timed out after {box['timeout_seconds']}s",

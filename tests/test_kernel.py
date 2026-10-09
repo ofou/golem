@@ -198,7 +198,7 @@ class GapTest(unittest.TestCase):
 @unittest.skipUnless(Sandbox.available(), "Docker is not running")
 class SandboxTest(unittest.TestCase):
     def test_no_network_no_env_read_only_non_root(self):
-        os.environ["GOLEM_PROBE_SECRET"] = "must-not-leak"
+        os.environ["GOLEM_PROBE_SECRET"] = "must-not-leak"  # noqa: S105 - probe value, not a credential
         snap = Path(tempfile.mkdtemp())
         bundle = Path(tempfile.mkdtemp())
         (bundle / "tool.py").write_text(
